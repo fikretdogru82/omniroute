@@ -1,0 +1,52 @@
+name: Docker Build & Push to Docker Hub
+
+# main branch'e push olduğunda otomatik çalışır.
+# Manuel tetikleme için Actions sekmesinden "Run workflow" kullanın.
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-push:
+    name: Build Docker image and push to Docker Hub
+    runs-on: ubuntu-latest
+    # GitHub Actions runner'ın free tier'ı 7 GB RAM sunar — Render'ın build
+    # ortamından çok daha fazla. Next.js build burada başarılı olur.
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up QEMU (multi-platform build için)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # amd64 yeterli (Render free plan amd64 çalıştırır)
+          platforms: linux/amd64
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/omniroute:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/omniroute:${{ github.sha }}
+          # GitHub Actions cache → tekrar build'de çok daha hızlı
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            OMNIROUTE_BUILD_MEMORY_MB=6144

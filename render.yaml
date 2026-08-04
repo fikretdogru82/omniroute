@@ -1,0 +1,85 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Render Blueprint — OmniRoute + Keep-Alive
+# ─────────────────────────────────────────────────────────────────────────────
+# Bu dosya, OmniRoute'u Render.com'a UYKU MODUNA GİRMEDEN deploy etmenizi sağlar.
+#
+# Kullanım:
+#   1. Bu klasörü kendi GitHub reponuza push edin.
+#   2. Render Dashboard → New → Blueprint → reponuzu seçin.
+#   3. Aşağıdaki 2 yerdeki YER TUTUCULARI kendi değerlerinizle değiştirin:
+#        a. repo:                https://github.com/KULLANICI-ADI/omniroute
+#        b. KEEP_ALIVE_URL:      https://omniroute.onrender.com
+#
+# Katmanlı strateji:
+#   L1) dockerCommand = keep-alive --supervise → OmniRoute'u başlatır ve her
+#       5 dk'da bir kendine ping atar → instance hiç "inactive" olmaz.
+#   L2) healthCheckPath = /api/health/ping     → Render'ın kendi periyodik
+#       izlemesi (auth'suz, hafif liveness endpoint).
+#   L3) Cron job (her 5 dk'da bir --once ping) → Harici yedek tetikleyici.
+#       Instance zorla uyutulsa bile cron job isteğiyle uyanır.
+#   L4) UptimeRobot (docs/RENDER_KEEP_ALIVE.md) → Render dışı 3. parti yedek.
+#
+# Detaylı kurulum: docs/RENDER_KEEP_ALIVE.md
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  # ── L1+L2: Ana web service ─────────────────────────────────────────────────
+  - type: web
+    name: omniroute
+    runtime: docker
+    repo: https://github.com/fikretdogru82/omniroute
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    # Supervisor modu: OmniRoute'u spawn eder + self-ping döngüsünü çalıştırır.
+    dockerCommand: node keep-alive.mjs --supervise
+    # Render'ın kendi health check'i. 503 dönerse Render instance'ı restart eder.
+    healthCheckPath: /api/health/ping
+    healthCheckTimeout: 30
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 20128
+      - key: HOSTNAME
+        value: 0.0.0.0
+      - key: DATA_DIR
+        value: /app/data
+      - key: OMNIROUTE_MEMORY_MB
+        value: 1024
+      # Supervisor'ın başlatacağı OmniRoute komutu (Docker standalone).
+      - key: START_COMMAND
+        value: node dev/run-standalone.mjs
+      # Self-ping hedefi. Deploy sonrası Render'ın verdiği URL'yi yazın.
+      - key: KEEP_ALIVE_URL
+        value: https://omniroute.onrender.com        # ← KENDİ SERVİS URL'İNİZ
+      - key: KEEP_ALIVE_INTERVAL
+        value: "300"
+      # OmniRoute dashboard için şifreli oturum (önerilir).
+      # - key: OMNIROUTE_ADMIN_PASSWORD
+      #   generateValue: true
+    # ⚠️ FREE PLAN'DA PERSISTENT DISK DESTEKLENMEZ!
+    # SQLite verisi (/app/data) her instance restart'ında silinir. Verilerin
+    # kalıcı olması için PAID plana yükseltip aşağıdaki bloğu açın:
+    # disk:
+    #   name: omniroute-data
+    #   mountPath: /app/data
+    #   sizeGB: 1
+
+  # ── L3: Yedek keep-alive cron job ──────────────────────────────────────────
+  # Web service uykuya dalsa bile bu job her 5 dk'da bir ping atarak uyandırır.
+  # ⚠️ Free plan'da tüm servisler 750 instance-saati PAYLAŞIR. Cron job da saat
+  # tüketir; aylık limiti aşarsanız bu bloğu silin ve UptimeRobot'a güvenin.
+  - type: cron
+    name: omniroute-keep-alive
+    runtime: docker
+    repo: https://github.com/fikretdogru82/omniroute
+    plan: free
+    schedule: "*/5 * * * *"
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: node keep-alive.mjs --once
+    envVars:
+      - key: KEEP_ALIVE_URL
+        value: https://omniroute.onrender.com        # ← KENDİ SERVİS URL'İNİZ
